@@ -108,20 +108,9 @@ class MLMLightningModule(AbsLightningModule):
 		return self.model(**batch)
 
 	def _common_step(self, batch: Dict, batch_idx: int, step_type: str) -> torch.Tensor:
-		byte_ids = batch['byte_ids']
 		atom_labels = batch['atom_labels']
-		atom_mask = batch['atom_mask']
-		mask_strategy = batch.get('mask_strategy', None)
-		bert_attention_mask = batch['bert_attention_mask']
-		is_atom_patch = batch['is_atom_patch']
 
-		outputs = self(
-			byte_ids=byte_ids, 
-			bert_attention_mask=bert_attention_mask,
-			atom_mask=atom_mask,
-			mask_strategy=mask_strategy,
-			is_atom_patch=is_atom_patch,
-		)
+		outputs = self(**batch)
 		
 		logits = outputs['logits']  # (B, N, P, V)
 		logits_flat = logits.view(-1, logits.size(-1))

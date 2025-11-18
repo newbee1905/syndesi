@@ -126,6 +126,9 @@ class MLMLightningModule(AbsLightningModule):
 		logits = outputs['logits']  # (B, N, P, V)
 		logits_flat = logits.view(-1, logits.size(-1))
 		labels_flat = atom_labels.view(-1)
+
+		# Calculate loss
+		loss = self.criterion(logits_flat, labels_flat)
 		
 		# Calculate metrics
 		with torch.no_grad():

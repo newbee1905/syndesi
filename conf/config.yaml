@@ -1,0 +1,30 @@
+defaults:
+  - _self_ 
+  - experiment: null
+
+trainer:
+  max_epochs: 50
+  devices: 1
+  log_every_n_steps: 50
+  logger_name: "MyMambaModel" 
+
+data:
+  batch_size: 32
+  num_workers: 8
+  max_bytes_per_atom: 8
+  vocab_size: 257 # 256 bytes + 1 padding
+
+  dataset_name: null
+
+  # --- Pre-training Task keys ---
+  mlm_probability: null
+  augment_prob: null
+  label_smoothing: null
+  
+  # --- Fine-tuning Task keys ---
+  target_column: null
+  val_split: null
+  test_split: null
+
+# Path to resume training (for any task)
+checkpoint_path: null

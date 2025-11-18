@@ -1,0 +1,45 @@
+# @package _global_
+
+task_name: "finetune"
+
+trainer:
+  max_epochs: 20
+  logger_name: "QM9_Finetune_Mamba"
+
+data:
+  dataset_name: "liuganghuggingface/QM9"
+  target_column: "g298_atom"
+  val_split: 0.1
+  test_split: 0.1
+
+model:
+  architecture: "mamba_bimamba"
+
+module:
+  _target_: modules.QM9LightningModule
+  architecture: "mamba_bimamba"
+  lr: 2e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  total_training_steps: null
+  d_model: 512
+  
+  checkpoint_path: "logs/MambaBiMamba/version_0/checkpoints/epoch=9-step=34740.ckpt"
+  
+  model_config:
+    vocab_size: ${data.vocab_size}
+    max_bytes_per_atom: ${data.max_bytes_per_atom}
+    dropout: 0.1
+    patch_dim: 128
+    local_mamba_layers: 4
+    local_mamba_d_state: 16
+    local_mamba_conv_kernel: 4
+    local_mamba_expand: 2
+    d_model: 512
+    n_layers: 12
+    global_mamba_d_state: 32
+    global_mamba_conv_kernel: 4
+    global_mamba_expand: 2
+  
+  # chemberta_model is not used, but AbsLightningModule expects it
+  chemberta_model: null

@@ -1,0 +1,44 @@
+# @package _global_
+
+task_name: "pretrain"
+
+trainer:
+  max_epochs: 5
+  logger_name: "MambaBiMamba_Pretrain"
+
+data:
+  # dataset_name: "yairschiff/zinc250k"
+  dataset_name: "sagawa/pubchem-10m-canonicalized"
+  mlm_probability: 0.15
+  augment_prob: 0.5
+  label_smoothing: 0.1
+
+# Lightning Module settings
+module:
+  _target_: modules.MLMLightningModule
+  architecture: "mamba_bimamba"
+  lr: 1e-4
+  weight_decay: 0.1
+  warmup_ratio: 0.1
+  label_smoothing: ${data.label_smoothing}
+  total_training_steps: null
+  
+  # Configuration for the MolecularMambaBiMamba model
+  model_config:
+    vocab_size: ${data.vocab_size}
+    max_bytes_per_atom: ${data.max_bytes_per_atom}
+    dropout: 0.1
+
+    # --- Local Mamba Config ---
+    patch_dim: 128
+    local_mamba_layers: 4
+    local_mamba_d_state: 16
+    local_mamba_conv_kernel: 4
+    local_mamba_expand: 2
+
+    # --- Global BiMamba Config ---
+    d_model: 512
+    n_layers: 12
+    global_mamba_d_state: 32
+    global_mamba_conv_kernel: 4
+    global_mamba_expand: 2

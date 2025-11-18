@@ -1,0 +1,32 @@
+# @package _global_
+
+task_name: "finetune"
+
+trainer:
+  max_epochs: 20
+  logger_name: "QM9_Finetune_ChemBERTa"
+
+data:
+  dataset_name: "silesiacz/qm9_g4mp2"
+  target_column: "g4mp2"
+  val_split: 0.1
+  test_split: 0.1
+
+model:
+  architecture: "chemberta"
+  chemberta:
+    max_length: 128
+
+module:
+  _target_: modules.QM9LightningModule
+  architecture: "chemberta"
+  lr: 2e-5
+  weight_decay: 0.1
+  warmup_ratio: 0.1
+  total_training_steps: null
+  
+  chemberta_model: "DeepChem/ChemBERTa-77M-MTR"
+  
+  checkpoint_path: null
+  model_config: null
+  d_model: 384

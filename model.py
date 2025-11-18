@@ -142,7 +142,7 @@ class PaiNNMixing(nn.Module):
 	Mixes vector features into scalar features locally (intra-atomic).
 	This is CRITICAL for passing geometric info (v) into Mamba (which sees only s).
 	"""
-	def __init__(self, n_atom_basis: int, activation: callable, epsilon: float = 1e-8, glu_variant: bool = False):
+	def __init__(self, n_atom_basis: int, activation: callable, epsilon: float = 1e-6, glu_variant: bool = False):
 		super().__init__()
 		self.n_atom_basis = n_atom_basis
 		self.norm = RMSNorm(n_atom_basis)
@@ -269,8 +269,10 @@ class BiMambaPaiNNLayer(nn.Module):
 		
 		if self.use_painn:
 			self.painn = PaiNNBlock(d_model, n_rbf)
+			self.painn_norm = RMSNorm(d_model)
 		else:
 			self.painn = None
+			self.painn_norm = None
 			
 		self.mamba_fwd = Mamba2(d_model=d_model, d_state=d_state, d_conv=d_conv, expand=expand, rmsnorm=True)
 		self.mamba_bwd = Mamba2(d_model=d_model, d_state=d_state, d_conv=d_conv, expand=expand, rmsnorm=True)
@@ -321,6 +323,7 @@ class BiMambaPaiNNLayer(nn.Module):
 			
 			# Scatter back to original positions.
 			s = torch.zeros_like(s).scatter_(1, gather_idx, s_sorted_updated)
+			s = self.painn_norm(s)
 
 		h_fwd = self.mamba_fwd(s)
 		s_rev = torch.flip(s, dims=[1])
@@ -384,10 +387,9 @@ class BiMambaBackbone(nn.Module):
 			diff = pos.unsqueeze(2) - pos.unsqueeze(1)
 			dist = torch.norm(diff, dim=-1)
 			
-			dist_mask = (dist < self.cutoff) & (dist > 1e-5)
-			mask_ij = dist_mask
+			mask_ij = (dist < self.cutoff) & (dist > 1e-5)
 			
-			dir_ij = diff / (dist + 1e-8).unsqueeze(-1)
+			dir_ij = diff / torch.clamp(dist, min=1e-6).unsqueeze(-1)
 			rbf_val = self.radial_basis(dist)
 			d_scaled = dist / self.cutoff
 			fcut = 0.5 * (torch.cos(math.pi * d_scaled) + 1.0) * mask_ij.float()

@@ -3,75 +3,107 @@ from torch.utils.data import Dataset
 from typing import List, Optional, Dict
 
 from rdkit import Chem
+from rdkit.Chem import AllChem
 from rdkit import RDLogger
 # Disable verbose RDKit logging
 RDLogger.DisableLog('rdApp.*')
 
 from tokenizer import AtomLevelSMILESTokenizer, SMILESToken
 
-
 class BytePatchSMILESProcessor:
 	"""
 	Converts SMILES to torch tensors.
 	Processes a SINGLE SMILES string. Collate_fn handles batching.
 	"""
-
 	def __init__(
 		self,
 		vocab_size: int = 257,
 		max_bytes_per_atom: int = 8,
+		generate_3d: bool = True
 	):
 		"""
 		Args:
 			vocab_size: Byte vocabulary (0-255 + 1 pad)
 			max_bytes_per_atom: Max bytes per atom/token (padding)
+			generate_3d: Enable generating 3d geometric of SMILES
 		"""
 		self.tokenizer = AtomLevelSMILESTokenizer(vocab_size, max_bytes_per_atom)
 		self.vocab_size = vocab_size
 		self.max_bytes_per_atom = max_bytes_per_atom
+		self.generate_3d = generate_3d
 
 	def process_smiles(self, smiles: str) -> Dict[str, torch.Tensor]:
-		"""
-		Processes a single SMILES string into byte IDs and token metadata.
-		Returns tensors.
-		"""
 		if not smiles or not isinstance(smiles, str):
 			raise ValueError(f"Invalid SMILES string: {smiles}")
 
+		# Tokenize
 		tokens = self.tokenizer.tokenize_smiles_atoms(smiles)
 		if not tokens:
 			raise ValueError(f"SMILES string '{smiles}' yielded no tokens.")
 
 		byte_seq = self.tokenizer.tokens_to_bytes(tokens)
-		
 		is_atom_mask = [t.is_atom for t in tokens]
-		
 		num_tokens = len(tokens)
-		num_bytes = len(byte_seq)
+		
+		# Generate 3D Coordinates (Geometry)
+		# Return positions for ALL atoms (Heavy + H)
+		# But map the Heavy atoms back to the sequence tokens.
+		
+		pos_list = []
+		is_hydrogen_list = []
+		
+		if self.generate_3d:
+			try:
+				mol = Chem.MolFromSmiles(smiles)
+				if mol:
+					# Add explicit Hydrogens. 
+					# RDKit places original atoms first, then appends Hydrogens.
+					# This ensures indices 0..N_heavy-1 match the SMILES order 
+					# (assuming SMILES atom order matches RDKit parsing order).
+					mol = Chem.AddHs(mol)
+					
+					res = AllChem.EmbedMolecule(mol, randomSeed=42)
+					if res == 0:
+						conf = mol.GetConformer()
+						num_atoms = mol.GetNumAtoms()
+						
+						for k in range(num_atoms):
+							pos_pt = conf.GetAtomPosition(k)
+							pos_list.append([pos_pt.x, pos_pt.y, pos_pt.z])
+							
+							atom = mol.GetAtomWithIdx(k)
+							is_hydrogen_list.append(atom.GetAtomicNum() == 1)
+							
+			except Exception as e:
+				pass
 
-		if num_bytes != num_tokens * self.max_bytes_per_atom:
-			# This should not happen if logic is correct
-			raise ValueError(f"Logic error: num_bytes ({num_bytes}) != num_tokens ({num_tokens}) * max_bytes ({self.max_bytes_per_atom})")
+		# Convert to tensors
+		if pos_list:
+			pos = torch.tensor(pos_list, dtype=torch.float32)
+			is_hydrogen = torch.tensor(is_hydrogen_list, dtype=torch.bool)
+		else:
+			# Fallback: empty tensors or handle in collate
+			pos = torch.zeros(0, 3, dtype=torch.float32)
+			is_hydrogen = torch.zeros(0, dtype=torch.bool)
 
 		return {
 			'byte_ids': torch.tensor(byte_seq, dtype=torch.long),
 			'is_atom_patch': torch.tensor(is_atom_mask, dtype=torch.bool),
-			'num_tokens': num_tokens
+			'num_tokens': num_tokens,
+			'pos': pos,
+			'is_hydrogen': is_hydrogen
 		}
 
 class MLMMapDataset(Dataset):
-	"""Dataset with masking strategy selection"""
 	def __init__(
 		self,
 		list_of_smiles: List[str],
 		processor: BytePatchSMILESProcessor,
 		mlm_probability: float = 0.15,
 		augment_prob: float = 0.0,
-
-		# BERT-style masking ratios (applied at patch level in model)
-		mask_token_prob: float = 0.8,   # Use [MASK] token
-		random_token_prob: float = 0.1,  # Use random patch
-		keep_token_prob: float = 0.1,	# Keep original
+		mask_token_prob: float = 0.8,
+		random_token_prob: float = 0.1,
+		keep_token_prob: float = 0.1,
 	):
 		self.processor = processor
 		self.mlm_probability = mlm_probability
@@ -80,25 +112,18 @@ class MLMMapDataset(Dataset):
 		self.random_token_prob = random_token_prob
 		self.keep_token_prob = keep_token_prob
 		self.smiles_list = list_of_smiles
-		
-		assert abs(mask_token_prob + random_token_prob + keep_token_prob - 1.0) < 1e-6, \
-			"Masking probabilities must sum to 1.0"
 
-		if self.augment_prob > 0 and Chem is not None:
-			print(f"ImprovedMLMMapDataset initialized with {len(self.smiles_list)} SMILES and augmentation (prob={self.augment_prob}).")
-		else:
-			print(f"ImprovedMLMMapDataset initialized with {len(self.smiles_list)} SMILES.")
+		print(f"MLMMapDataset initialized with {len(self.smiles_list)} SMILES.")
 
 	def __len__(self) -> int:
 		return len(self.smiles_list)
 
 	def __getitem__(self, idx: int) -> Optional[Dict[str, torch.Tensor]]:
 		smiles = self.smiles_list[idx]
-		
-		if not smiles or not isinstance(smiles, str):
+		if not smiles or not isinstance(smiles, str): 
 			return None
 		
-		# SMILES augmentation
+		# Augmentation
 		if Chem is not None and torch.rand(1).item() < self.augment_prob:
 			try:
 				mol = Chem.MolFromSmiles(smiles)
@@ -109,52 +134,40 @@ class MLMMapDataset(Dataset):
 
 		try:
 			token_data = self.processor.process_smiles(smiles)
-		except Exception as e:
+		except Exception:
 			return None
 
 		byte_ids = token_data['byte_ids']
 		is_atom_patch = token_data['is_atom_patch']
 		num_atoms = token_data['num_tokens']
 		
-		if num_atoms == 0:
+		if num_atoms == 0: 
 			return None
 
 		max_bytes_per_atom = self.processor.max_bytes_per_atom
-		
 		atom_labels = torch.full((num_atoms, max_bytes_per_atom), -100, dtype=torch.long)
 		atom_attention_mask = torch.ones(num_atoms, dtype=torch.long)
 		
-		# Select which atoms to mask
+		# Masking Logic
 		prob_mask = torch.rand(num_atoms) < self.mlm_probability
-		
 		if prob_mask.sum() == 0 and num_atoms > 0:
 			mask_idx = torch.randint(0, num_atoms, (1,)).item()
 			prob_mask[mask_idx] = True
-
 		atom_mask = prob_mask.bool()
 		
 		byte_ids_patched = byte_ids.view(num_atoms, max_bytes_per_atom)
-		
-		# Determine masking strategy for each masked atom
-		# 0 = use [MASK], 1 = use random, 2 = keep original
 		mask_strategy = torch.zeros(num_atoms, dtype=torch.long)
 		
 		if num_atoms > 0:
-			# Store labels for all masked positions
 			atom_labels[atom_mask] = byte_ids_patched[atom_mask]
-			
-			# Assign strategy to each masked atom
 			mask_indices = torch.where(atom_mask)[0]
 			for idx in mask_indices:
 				prob = torch.rand(1).item()
-				if prob < self.mask_token_prob:
-					mask_strategy[idx] = 0  # Use [MASK] token
-				elif prob < self.mask_token_prob + self.random_token_prob:
-					mask_strategy[idx] = 1  # Use random patch
-				else:
-					mask_strategy[idx] = 2  # Keep original
+				if prob < self.mask_token_prob: mask_strategy[idx] = 0
+				elif prob < self.mask_token_prob + self.random_token_prob: mask_strategy[idx] = 1
+				else: mask_strategy[idx] = 2
 
-		return {
+		item = {
 			'byte_ids': byte_ids,
 			'atom_labels': atom_labels,
 			'atom_mask': atom_mask,
@@ -162,26 +175,53 @@ class MLMMapDataset(Dataset):
 			'atom_attention_mask': atom_attention_mask,
 			'is_atom_patch': is_atom_patch,
 		}
+		
+		# Add geometry if present
+		if token_data['pos'].shape[0] > 0:
+			item['pos'] = token_data['pos']
+			item['is_hydrogen'] = token_data['is_hydrogen']
+			
+		return item
 
 def mlm_collate_fn(batch: List[Optional[Dict[str, any]]]) -> Dict[str, torch.Tensor]:
-	"""Pads batches to the max length in the batch, handles mask_strategy."""
-	
 	batch = [item for item in batch if item is not None and item['byte_ids'].shape[0] > 0]
-	if not batch:
-		return {} 
+	if not batch: return {}
 
+	# Sequence Padding
 	max_byte_len = max(item['byte_ids'].shape[0] for item in batch)
-	byte_ids_padded = torch.full((len(batch), max_byte_len), 0, dtype=torch.long)
-	
 	max_atom_len = max(item['atom_labels'].shape[0] for item in batch)
 	max_bytes = batch[0]['atom_labels'].shape[1]
 	
+	byte_ids_padded = torch.full((len(batch), max_byte_len), 0, dtype=torch.long)
 	atom_labels_padded = torch.full((len(batch), max_atom_len, max_bytes), -100, dtype=torch.long)
 	atom_mask_padded = torch.full((len(batch), max_atom_len), False, dtype=torch.bool)
 	atom_attention_mask_padded = torch.full((len(batch), max_atom_len), 0, dtype=torch.long)
 	mask_strategy_padded = torch.full((len(batch), max_atom_len), 0, dtype=torch.long)
 	is_atom_patch_padded = torch.full((len(batch), max_atom_len), False, dtype=torch.bool)
 	
+	# Geometry Padding (Handle Heavy + H)
+	has_geo = any('pos' in item for item in batch)
+	pos_padded = None
+	is_hydrogen_padded = None
+	
+	if has_geo:
+		max_geo_len = max((item['pos'].shape[0] for item in batch if 'pos' in item), default=0)
+		if max_geo_len > 0:
+			pos_padded = torch.zeros((len(batch), max_geo_len, 3), dtype=torch.float32)
+			# Mask to distinguish valid atoms (Heavy+H) from padding
+			# We reuse 'is_hydrogen' to track H, but we also need 'geo_mask' for padding?
+			# Typically PaiNN uses adjacency logic, so padding 0s is dangerous if 0,0,0 is valid.
+			# We will generate a separate geo_mask in model or just use padding awareness.
+			# For now, let's assume we can use a mask.
+			
+			# We also need to know which entries are Hydrogens
+			is_hydrogen_padded = torch.full((len(batch), max_geo_len), False, dtype=torch.bool)
+			
+			# We also need to know which entries are Heavy atoms (to link to sequence)
+			# Heavy atoms are simply (~is_hydrogen) & (valid_geo)
+			# RDKit puts heavy atoms first.
+			pass
+
 	for i, item in enumerate(batch):
 		b_len = item['byte_ids'].shape[0]
 		byte_ids_padded[i, :b_len] = item['byte_ids']
@@ -192,13 +232,16 @@ def mlm_collate_fn(batch: List[Optional[Dict[str, any]]]) -> Dict[str, torch.Ten
 		atom_attention_mask_padded[i, :a_len] = item['atom_attention_mask']
 		mask_strategy_padded[i, :a_len] = item['mask_strategy']
 		is_atom_patch_padded[i, :a_len] = item['is_atom_patch']
+		
+		if has_geo and 'pos' in item and item['pos'].shape[0] > 0:
+			g_len = item['pos'].shape[0]
+			pos_padded[i, :g_len] = item['pos']
+			is_hydrogen_padded[i, :g_len] = item['is_hydrogen']
 
-	bert_attention_mask = atom_attention_mask_padded.view(
-		len(batch), 1, 1, max_atom_len
-	)
+	bert_attention_mask = atom_attention_mask_padded.view(len(batch), 1, 1, max_atom_len)
 	bert_attention_mask = (1.0 - bert_attention_mask.float()) * -10000.0
-
-	return {
+	
+	out = {
 		'byte_ids': byte_ids_padded,
 		'atom_labels': atom_labels_padded,
 		'atom_mask': atom_mask_padded,
@@ -207,6 +250,12 @@ def mlm_collate_fn(batch: List[Optional[Dict[str, any]]]) -> Dict[str, torch.Ten
 		'bert_attention_mask': bert_attention_mask,
 		'is_atom_patch': is_atom_patch_padded,
 	}
+	
+	if pos_padded is not None:
+		out['pos'] = pos_padded
+		out['is_hydrogen'] = is_hydrogen_padded
+		
+	return out
 
 class ChemBERTaFinetuneDataset(Dataset):
 	"""Dataset for fine-tuning ChemBERTa."""

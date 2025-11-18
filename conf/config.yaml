@@ -3,13 +3,13 @@ defaults:
   - experiment: null
 
 trainer:
-  max_epochs: 50
+  max_epochs: 10
   devices: 1
   log_every_n_steps: 50
   logger_name: "MyMambaModel" 
 
 data:
-  batch_size: 32
+  batch_size: 16
   num_workers: 8
   max_bytes_per_atom: 8
   vocab_size: 257 # 256 bytes + 1 padding

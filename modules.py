@@ -153,10 +153,13 @@ class QM9LightningModule(AbsLightningModule):
 		warmup_ratio: float = 0.1,
 		model_config: Optional[Dict] = None,
 		checkpoint_path: Optional[str] = None,
-		chemberta_model: str = "DeepChem/ChemBERTa-77M-MTR"
+		chemberta_model: str = "DeepChem/ChemBERTa-77M-MTR",
+		normalize_targets: bool = True,
+		target_mean: Optional[float] = None,
+		target_std: Optional[float] = None,
 	):
 		super().__init__(lr, weight_decay, total_training_steps, warmup_ratio)
-		self.save_hyperparameters("architecture", "d_model")
+		self.save_hyperparameters()
 
 		if architecture == 'mamba_bimamba':
 			if model_config is None or checkpoint_path is None:
@@ -173,7 +176,12 @@ class QM9LightningModule(AbsLightningModule):
 			del self.model.mlm_head
 			
 			self.pooler = MeanPooling()
-			self.regressor = nn.Linear(d_model, 1)
+			self.regressor = nn.Sequential(
+				nn.Linear(d_model, d_model // 2),
+				nn.SiLU(),
+				nn.Dropout(0.1),
+				nn.Linear(d_model // 2, 1),
+			)
 
 		elif architecture == 'chemberta':
 			# Load a pre-trained ChemBERTa model
@@ -182,13 +190,60 @@ class QM9LightningModule(AbsLightningModule):
 			self.hparams.d_model = self.model.config.hidden_size
 			
 			self.pooler = CLSPooling()
-			self.regressor = nn.Linear(self.hparams.d_model, 1)
-		
+			self.regressor = nn.Sequential(
+				nn.Linear(d_model, d_model // 2),
+				nn.SiLU(),
+				nn.Dropout(0.1),
+				nn.Linear(d_model // 2, 1),
+			)
 		else:
 			raise ValueError(f"Unknown architecture: {architecture}")
+
+		for module in self.regressor.modules():
+			if isinstance(module, nn.Linear):
+				nn.init.normal_(module.weight, mean=0.0, std=0.02)
+				if module.bias is not None:
+					nn.init.zeros_(module.bias)
 			
 		self.criterion = nn.MSELoss()
 		self.mae = nn.L1Loss()
+
+		self.register_buffer(
+			'_target_mean', 
+			torch.tensor(target_mean) if target_mean is not None else None
+		)
+		self.register_buffer(
+			'_target_std', 
+			torch.tensor(target_std) if target_std is not None else None
+		)
+		self._stats_computed = (target_mean is not None and target_std is not None)
+
+	def _compute_statistics(self, targets: torch.Tensor):
+		"""Compute mean and std from the first training batch."""
+		if not self._stats_computed:
+			self._target_mean = targets.mean().detach()
+			self._target_std = targets.std().detach()
+			self._stats_computed = True
+
+			print(f"\n{'='*60}")
+			print(f"Target Statistics Computed:")
+			print(f"Mean: {self._target_mean.item():.4f}")
+			print(f"Std:  {self._target_std.item():.4f}")
+			print(f"{'='*60}\n")
+
+	def normalize_targets(self, targets: torch.Tensor) -> torch.Tensor:
+		"""Normalize targets to zero mean and unit variance."""
+		if not self.hparams.normalize_targets:
+			return targets
+
+		return (targets - self._target_mean) / (self._target_std + 1e-8)
+	
+	def denormalize_predictions(self, predictions: torch.Tensor) -> torch.Tensor:
+		"""Convert normalized predictions back to original scale."""
+		if not self.hparams.normalize_targets:
+			return predictions
+
+		return predictions * (self._target_std + 1e-8) + self._target_mean
 
 	def forward(self, batch: Dict) -> torch.Tensor:
 		if self.hparams.architecture == 'mamba_bimamba':
@@ -213,6 +268,16 @@ class QM9LightningModule(AbsLightningModule):
 
 	def _common_step(self, batch: Dict, batch_idx: int, step_type: str) -> torch.Tensor:
 		targets = batch['targets']
+
+		if step_type == 'train' and not self._stats_computed:
+			self._compute_statistics(targets)
+		
+		# Normalize targets for training
+		if self.hparams.normalize_targets and self._stats_computed:
+			targets_normalized = self.normalize_targets(targets)
+		else:
+			targets_normalized = targets
+
 		predictions = self(batch)
 		
 		loss = self.criterion(predictions, targets) # MSE Loss
@@ -224,11 +289,35 @@ class QM9LightningModule(AbsLightningModule):
 		)
 		
 		if step_type in ('val', 'test'):
-			mae = self.mae(predictions, targets)
+			with torch.no_grad():
+				if self.hparams.normalize_targets and self._stats_computed:
+					predictions_original = self.denormalize_predictions(predictions)
+					targets_original = targets
+				else:
+					predictions_original = predictions
+					targets_original = targets
+
+			mae = self.mae(predictions_original, targets_original)
+			mse = self.criterion(predictions_original, targets_original)
+			rmse = torch.sqrt(mse)
+			relative_error = mae / (targets_original.abs().mean() + 1e-8)
+
 			self.log(
 				f'{step_type}_mae', mae, 
 				on_step=False, on_epoch=True, 
 				prog_bar=True, logger=True, sync_dist=True,
 			)
+
+			self.log(
+				f'{step_type}_rmse', rmse,
+				on_step=False, on_epoch=True,
+				prog_bar=False, logger=True, sync_dist=True,
+			)
 			
+			self.log(
+				f'{step_type}_relative_error', relative_error,
+				on_step=False, on_epoch=True,
+				prog_bar=False, logger=True, sync_dist=True,
+			)
+		
 		return loss

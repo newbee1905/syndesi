@@ -23,6 +23,10 @@ module:
   warmup_ratio: 0.1
   total_training_steps: null
   d_model: 512
+
+  normalize_targets: true
+  target_mean: null 
+  target_std: null 
   
   checkpoint_path: "logs/MambaBiMamba/version_0/checkpoints/epoch=9-step=34740.ckpt"
   

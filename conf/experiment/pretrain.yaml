@@ -3,12 +3,12 @@
 task_name: "pretrain"
 
 trainer:
-  max_epochs: 5
+  max_epochs: 25
   logger_name: "MambaBiMamba_Pretrain"
 
 data:
-  # dataset_name: "yairschiff/zinc250k"
-  dataset_name: "sagawa/pubchem-10m-canonicalized"
+  dataset_name: "yairschiff/zinc250k"
+  # dataset_name: "sagawa/pubchem-10m-canonicalized"
   mlm_probability: 0.15
   augment_prob: 0.5
   label_smoothing: 0.1

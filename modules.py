@@ -108,33 +108,53 @@ class MLMLightningModule(AbsLightningModule):
 		return self.model(**batch)
 
 	def _common_step(self, batch: Dict, batch_idx: int, step_type: str) -> torch.Tensor:
-		outputs = self(**batch)
+		byte_ids = batch['byte_ids']
+		atom_labels = batch['atom_labels']
+		atom_mask = batch['atom_mask']
+		mask_strategy = batch.get('mask_strategy', None)
+		bert_attention_mask = batch['bert_attention_mask']
+		is_atom_patch = batch['is_atom_patch']
+
+		outputs = self(
+			byte_ids=byte_ids, 
+			bert_attention_mask=bert_attention_mask,
+			atom_mask=atom_mask,
+			mask_strategy=mask_strategy,
+			is_atom_patch=is_atom_patch,
+		)
 		
-		logits = outputs['logits']
+		logits = outputs['logits']  # (B, N, P, V)
 		logits_flat = logits.view(-1, logits.size(-1))
-		labels_flat = batch['atom_labels'].view(-1)
+		labels_flat = atom_labels.view(-1)
 		
-		loss = self.criterion(logits_flat, labels_flat)
-		
+		# Calculate metrics
 		with torch.no_grad():
-			mask_positions = labels_flat != -100
-			if mask_positions.sum() > 0:
+			non_padding_mask = (labels_flat != -100) & (labels_flat != 0)
+			if non_padding_mask.sum() > 0:
 				predictions = logits_flat.argmax(dim=-1)
-				correct = (predictions == labels_flat) & mask_positions
-				accuracy = correct.sum().float() / mask_positions.sum()
+
+				padding_correct = (predictions == labels_flat) & non_padding_mask
+				accuracy = padding_correct.sum().float() / non_padding_mask.sum()
 				
-				self.log(f'{step_type}_byte_accuracy', accuracy, 
-						 on_step=False, on_epoch=True, 
-						 prog_bar=True, logger=True, sync_dist=True)
+				# Per-byte accuracy
+				self.log(
+					f'{step_type}_byte_accuracy', accuracy, 
+					on_step=False, on_epoch=True, 
+					prog_bar=True, logger=True, sync_dist=True,
+				)
 				
 				perplexity = torch.exp(loss)
-				self.log(f'{step_type}_perplexity', perplexity,
-						 on_step=False, on_epoch=True,
-						 prog_bar=False, logger=True, sync_dist=True)
-		
-		self.log(f'{step_type}_loss', loss, 
-				 on_step=(step_type == 'train'), on_epoch=True, 
-				 prog_bar=True, logger=True, sync_dist=True)
+				self.log(
+					f'{step_type}_perplexity', perplexity,
+					on_step=False, on_epoch=True,
+					prog_bar=False, logger=True, sync_dist=True,
+				)
+				
+		self.log(
+			f'{step_type}_loss', loss, 
+			on_step=(step_type == 'train'), on_epoch=True, 
+			prog_bar=True, logger=True, sync_dist=True,
+		)
 		
 		return loss
 

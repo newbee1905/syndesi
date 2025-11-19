@@ -52,7 +52,7 @@ class AbsLightningModule(pl.LightningModule, abc.ABC):
 			{'params': no_decay_params, 'weight_decay': 0.0}
 		]
 		
-		optimizer = AdamAtan2(
+		optimizer = torch.optim.AdamW(
 			optimizer_grouped_parameters, 
 			lr=self.hparams.lr,
 			betas=(0.9, 0.98), 

@@ -8,6 +8,7 @@ trainer:
   log_every_n_steps: 50
   logger_name: "MyMambaModel" 
   gradient_clip_val: 1.0
+  gradient_accumulation_steps: 1.0
 
 data:
   batch_size: 16

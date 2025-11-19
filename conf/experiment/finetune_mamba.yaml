@@ -28,7 +28,8 @@ module:
   target_mean: null 
   target_std: null 
   
-  checkpoint_path: "logs/MambaBiMamba/version_0/checkpoints/epoch=9-step=34740.ckpt"
+  # checkpoint_path: "logs/MambaBiMamba/version_0/checkpoints/epoch=9-step=34740.ckpt"
+  checkpoint_path: "logs/MambaBiMamba_Pretrain/version_2/checkpoints/last.ckpt""
   
   model_config:
     vocab_size: ${data.vocab_size}

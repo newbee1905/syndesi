@@ -229,6 +229,115 @@ class PaiNNBlock(nn.Module):
 		
 		return s_heavy_out, v_out
 
+class GatedVectorBlock(nn.Module):
+	"""
+	Replaces PaiNN Mixing with GVP-style Gating.
+	Uses Scalars to GATE the Vectors.
+	"""
+	def __init__(self, d_model: int, n_rbf: int):
+		super().__init__()
+		self.d_model = d_model
+		
+		# Learnable embedding for Hydrogen atoms (Scalar only)
+		self.h_atom_embedding = nn.Parameter(torch.randn(d_model))
+
+		# Generates 3 sets of filters from distances:
+		# - Ws:  Scalar -> Scalar
+		# - Wsv: Scalar -> Vector (creates vector from geometry)
+		# - Wv:  Vector -> Vector
+		self.filter_net = nn.Sequential(
+			nn.Linear(n_rbf, d_model),
+			nn.SiLU(),
+			nn.Linear(d_model, d_model * 3) 
+		)
+
+		self.s_proj = nn.Linear(d_model, d_model) # Update scalars
+		self.v_proj = nn.Linear(d_model, d_model, bias=False) # Update vectors
+		
+		# Gating Projection (Scalar -> Gate)
+		self.gate_proj = nn.Linear(d_model, d_model)
+		
+		self.norm = RMSNorm(d_model)
+
+	def forward(
+		self, 
+		s_heavy: torch.Tensor, 
+		v_all: torch.Tensor, 
+		rbf: torch.Tensor, 
+		dir_ij: torch.Tensor, 
+		mask_ij: torch.Tensor,
+		is_hydrogen: torch.Tensor
+	):
+		"""
+		s_heavy: (B, N_heavy, D)
+		v_all:   (B, N_all, 3, D) -> Contains both Heavy and H vectors
+		rbf:	 (B, N_all, N_all, n_rbf)
+		dir_ij:  (B, N_all, N_all, 3)
+		mask_ij: (B, N_all, N_all)
+		is_hydrogen: (B, N_all)
+		"""
+		B, N_all, _, D = v_all.shape
+		
+		# Construct s_all similar to original PaiNNBlock
+		h_emb = self.h_atom_embedding.view(1, 1, -1).expand(B, N_all, -1)
+		
+		# Pad s_heavy to N_all length
+		# (Assumes heavy atoms are at the start of the sequence, which matches your collate/proc)
+		padding_needed = N_all - s_heavy.shape[1]
+		s_heavy_padded = F.pad(s_heavy, (0, 0, 0, padding_needed))
+		
+		# Fill H slots
+		s_all = torch.where(is_hydrogen.unsqueeze(-1), h_emb, s_heavy_padded)
+		s_all = self.norm(s_all) # Pre-norm for stability
+
+		# Generate Filters
+		# Wij: (B, N, N, 3*D)
+		Wij = self.filter_net(rbf) * mask_ij.unsqueeze(-1)
+		Ws, Wsv, Wv = torch.split(Wij, self.d_model, dim=-1)
+
+		# Message Passing
+		
+		# A. Scalar Message (s_j * Ws)
+		# (B, 1, N, D) * (B, N, N, D) -> (B, N, N, D)
+		s_neighbors = s_all.unsqueeze(1) * Ws
+		s_msg = s_neighbors.sum(dim=2) # Sum over j -> (B, N, D)
+
+		# B. Vector Message (Two parts)
+		
+		# Part 1: Vector -> Vector (v_j * Wv)
+		# (B, 1, N, 3, D) * (B, N, N, 1, D)
+		v_neighbors = v_all.unsqueeze(1) * Wv.unsqueeze(-2)
+		
+		# Part 2: Scalar -> Vector (Geometry creation)
+		# We use s_j to scale the bond direction dir_ij
+		# (B, N, N, 3, 1) * (B, 1, N, 1, D) * (B, N, N, 1, D)
+		# s_all.unsqueeze(1) is s_j
+		s_to_v_neighbors = dir_ij.unsqueeze(-1) * (s_all.unsqueeze(1) * Wsv).unsqueeze(-2)
+		
+		# Sum over j
+		v_msg = (v_neighbors + s_to_v_neighbors).sum(dim=2) # (B, N, 3, D)
+
+		# Updates (GVP Style)
+
+		# Update Scalars
+		# Standard Residual connection
+		s_update = self.s_proj(s_msg)
+		s_new = s_all + s_update
+
+		# Calculate Gate from NEW scalars: sigma(Linear(s))
+		#	This determines which vector channels are allowed to pass
+		gate = torch.sigmoid(self.gate_proj(s_new)).unsqueeze(-2) # (B, N, 1, D)
+		
+		# Apply Update
+		#	v_new = v + Proj(v_msg) * Gate
+		v_update = self.v_proj(v_msg) * gate
+		v_new = v_all + v_update
+
+		# Slice back the heavy atoms for Mamba
+		s_heavy_out = s_new[:, :s_heavy.shape[1], :]
+		
+		return s_heavy_out, v_new
+
 class LocalMambaLayer(nn.Module):
 	"""
 	Unidirectional Mamba Layer
@@ -268,7 +377,10 @@ class BiMambaPaiNNLayer(nn.Module):
 		self.use_painn = use_painn
 		
 		if self.use_painn:
-			self.painn = PaiNNBlock(d_model, n_rbf)
+			# self.painn = PaiNNBlock(d_model, n_rbf)
+			# self.painn_norm = RMSNorm(d_model)
+
+			self.painn = GatedVectorBlock(d_model, n_rbf)
 			self.painn_norm = RMSNorm(d_model)
 		else:
 			self.painn = None

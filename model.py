@@ -510,6 +510,9 @@ class BiMambaBackbone(nn.Module):
 			fcut = 0.5 * (torch.cos(math.pi * d_scaled) + 1.0) * mask_ij.float()
 			rbf = rbf_val * fcut.unsqueeze(-1)
 
+			rbf = rbf.to(dtype=s.dtype)
+      dir_ij = dir_ij.to(dtype=s.dtype)
+
 		for layer in self.layers:
 			# Pass data only if initialized; layer handles None internally
 			s, v = layer(s, v, rbf, dir_ij, mask_ij, is_atom_patch, is_hydrogen)

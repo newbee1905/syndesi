@@ -82,11 +82,14 @@ class RadialBasis(nn.Module):
 		d_scaled = torch.clamp(d_scaled, max=1.0)
 
 		# Cosine cutoff
-		cutoff_fn = 0.5 * (torch.cos(math.pi * d_scaled) + 1.0) * (d_scaled < 1.0).float()
+		mask = (d_scaled < 1.0).float()
+		cutoff_fn = 0.5 * (torch.cos(math.pi * d_scaled) + 1.0) * mask
 
 		# RBF expansion
 		val = torch.sin(self.frequencies.view(1,1,1,-1) * d_scaled.unsqueeze(-1)) 
-		return cutoff_fn.unsqueeze(-1) * val
+		out = cutoff_fn.unsqueeze(-1) * val
+
+		return out.to(dtype=self.frequencies.dtype)
 
 class PaiNNInteraction(nn.Module):
 	"""

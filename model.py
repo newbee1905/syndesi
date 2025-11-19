@@ -511,7 +511,7 @@ class BiMambaBackbone(nn.Module):
 			rbf = rbf_val * fcut.unsqueeze(-1)
 
 			rbf = rbf.to(dtype=s.dtype)
-      dir_ij = dir_ij.to(dtype=s.dtype)
+			dir_ij = dir_ij.to(dtype=s.dtype)
 
 		for layer in self.layers:
 			# Pass data only if initialized; layer handles None internally

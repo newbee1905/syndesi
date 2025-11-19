@@ -190,7 +190,8 @@ def main(cfg: DictConfig):
 		precision=precision,
 		log_every_n_steps=cfg.trainer.log_every_n_steps,
 		logger=logger,
-		callbacks=[checkpoint_callback]
+		callbacks=[checkpoint_callback],
+		strategy="deepspeed",
 	)
 
 	print("Initializing Lightning Module...")

@@ -8,6 +8,7 @@ dependencies = [
     "adam-atan2-pytorch>=0.2.4",
     "causal-conv1d>=1.5.3.post1",
     "datasets>=3.1.0",
+    "deepspeed>=0.18.2",
     "einops>=0.8.1",
     "hydra-core>=1.3.2",
     "lightning>=2.3.3",
